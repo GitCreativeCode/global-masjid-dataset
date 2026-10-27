@@ -40,21 +40,26 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def get_latest_overture_version():
     try:
-        req = urllib.request.Request("https://stac.overturemaps.org/catalog.json", headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("latest", "2026-10-21.0")
+        req = urllib.request.Request("https://stac.overturemaps.org/catalog.json", headers={"User-Agent": "GlobalMasjidCompiler/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            links = data.get("links", [])
+            child_links = [l.get("href", "") for l in links if l.get("rel") == "child"]
+            for href in reversed(child_links):
+                parts = href.strip("/").split("/")
+                if parts and parts[-1].count(".") >= 1:
+                    return parts[-1]
     except Exception as e:
-        print(f"Warning: Could not fetch STAC catalog ({e}), using fallback version.")
-        return "2026-10-21.0"
+        print(f"Warning: Could not fetch latest release dynamically ({e}). Defaulting to 2026-10-21.0")
+    return "2026-10-21.0"
 
 def main():
     print("=" * 60)
-    print("  Global Masjid Dataset Compiler")
+    print("  Global Mosque Dataset Compiler (Comprehensive Edition)")
     print("=" * 60)
     
-    release_version = get_latest_overture_version()
-    print(f"Targeting Overture Release: {release_version}")
+    release_ver = get_latest_overture_version()
+    print(f"Targeting Overture Release: {release_ver}")
     
     con = duckdb.connect()
     print("Loading DuckDB S3 & Spatial extensions...")
@@ -63,7 +68,6 @@ def main():
     con.execute("SET s3_region = 'us-west-2';")
     
     now_ts = int(time.time())
-    s3_path = f"s3://overturemaps-us-west-2/release/{release_version}/theme=places/type=place/*"
     
     query = f"""
     SELECT 
@@ -78,19 +82,60 @@ def main():
         websites[1] AS website,
         UPPER(COALESCE(addresses[1].country, '')) AS country
     FROM read_parquet(
-        '{s3_path}',
+        's3://overturemaps-us-west-2/release/{release_ver}/theme=places/type=place/*',
         filename = true,
         hive_partitioning = 1
     )
     WHERE (
-        taxonomy.primary ILIKE '%mosque%' 
-        OR basic_category ILIKE '%mosque%' 
+        -- Category matches (Overture standard category is muslim_place_of_worship)
+        taxonomy.primary ILIKE '%muslim%' 
+        OR basic_category ILIKE '%muslim%'
+        OR taxonomy.primary ILIKE '%mosque%' 
+        OR basic_category ILIKE '%mosque%'
+        -- Name matches for masjids, prayer halls, and Islamic centers
         OR names.primary ILIKE '%mosque%' 
         OR names.primary ILIKE '%masjid%'
         OR names.primary ILIKE '%musalla%'
+        OR names.primary ILIKE '%musallah%'
+        OR names.primary ILIKE '%jama masjid%'
+        OR names.primary ILIKE '%jamia masjid%'
+        OR names.primary ILIKE '%jame masjid%'
+        OR names.primary ILIKE '%islamic cent%'
+        OR names.primary ILIKE '%islamic soci%'
+        OR names.primary ILIKE '%islamic assoc%'
+        OR names.primary ILIKE '%islamic comm%'
+        OR names.primary ILIKE '%muslim cent%'
+        OR names.primary ILIKE '%muslim comm%'
+        OR names.primary ILIKE '%muslim assoc%'
+        OR names.primary ILIKE '%baitul%'
+        OR names.primary ILIKE '%markaz%'
+        OR names.primary ILIKE '%imambargah%'
+        OR names.primary ILIKE '%husainia%'
+        OR names.primary ILIKE '%hussainia%'
+        OR names.primary ILIKE '%khadija%'
+        OR names.primary ILIKE '%tawheed%'
     )
+    -- Exclude non-religious commercial categories
+    AND basic_category NOT IN (
+        'restaurant', 'cafe', 'food_and_beverage_store', 'grocery_store',
+        'fashion_and_apparel_store', 'specialty_store', 'hardware_home_and_garden_store',
+        'electronics_store', 'books_music_and_video_store',
+        'real_estate_service', 'financial_service', 'attorney_or_law_firm',
+        'medical_service', 'dental_clinic', 'automotive_service',
+        'sport_or_fitness_facility', 'gym'
+    )
+    -- Exclude business false-positive keywords
+    AND names.primary NOT ILIKE '%restaurant%'
+    AND names.primary NOT ILIKE '%grocery%'
+    AND names.primary NOT ILIKE '%meat%'
+    AND names.primary NOT ILIKE '%halal food%'
+    AND names.primary NOT ILIKE '%catering%'
+    AND names.primary NOT ILIKE '%boutique%'
+    AND names.primary NOT ILIKE '%travel%'
+    AND names.primary NOT ILIKE '%tours%'
     AND names.primary NOT ILIKE '%mosqueter%'
     AND names.primary NOT ILIKE '%mosqueda%'
+    AND names.primary NOT ILIKE '%farmacia%'
     AND names.primary IS NOT NULL
     AND ST_Y(geometry) IS NOT NULL 
     AND ST_X(geometry) IS NOT NULL;
@@ -99,7 +144,7 @@ def main():
     print("Fetching and filtering mosques across the globe from S3...")
     start_time = time.time()
     rows = con.execute(query).fetchall()
-    print(f"Extraction complete in {time.time() - start_time:.2f}s! Total mosques found: {len(rows):,}")
+    print(f"Extraction complete in {time.time() - start_time:.2f}s! Total places found: {len(rows):,}")
     
     # In-memory regional buckets
     regional_data = {region: [] for region in REGIONS}
@@ -117,9 +162,10 @@ def main():
             regional_data["other"].append(r[:9] + (now_ts,))
 
     # Compile regional databases
-    metadata = {"generated_at": now_ts, "version": release_version, "regions": {}}
+    metadata = {"generated_at": now_ts, "regions": {}}
     global_db_path = os.path.join(OUTPUT_DIR, "mosques_global.db")
     
+    # 1. Create global database
     if os.path.exists(global_db_path):
         os.remove(global_db_path)
     conn_global = sqlite3.connect(global_db_path)
@@ -129,6 +175,7 @@ def main():
     for reg, records in regional_data.items():
         all_records.extend(records)
         
+        # Save regional DB
         reg_db_path = os.path.join(OUTPUT_DIR, f"mosques_{reg}.db")
         if os.path.exists(reg_db_path):
             os.remove(reg_db_path)
@@ -138,6 +185,7 @@ def main():
         conn_reg.commit()
         conn_reg.close()
         
+        # Compress regional DB
         gz_path = f"{reg_db_path}.gz"
         with open(reg_db_path, "rb") as f_in, gzip.open(gz_path, "wb", compresslevel=9) as f_out:
             f_out.writelines(f_in)
@@ -149,6 +197,7 @@ def main():
         }
         print(f" - [{reg.upper()}] {len(records):,} mosques -> {metadata['regions'][reg]['gz_size_mb']} MB (gzipped)")
     
+    # Write all to global
     conn_global.executemany("INSERT OR REPLACE INTO mosques VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_records)
     conn_global.commit()
     conn_global.close()
@@ -164,6 +213,7 @@ def main():
     }
     print(f"\n[GLOBAL MERGED] {len(all_records):,} mosques -> {metadata['global']['gz_size_mb']} MB (gzipped)")
     
+    # Write metadata
     with open(os.path.join(OUTPUT_DIR, "version.json"), "w") as f:
         json.dump(metadata, f, indent=2)
     print("\nDataset generation completed successfully!")
