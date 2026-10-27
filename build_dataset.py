@@ -76,7 +76,7 @@ def main():
         addresses[1].postcode AS postcode,
         phones[1] AS phone,
         websites[1] AS website,
-        UPPER(country) AS country
+        UPPER(COALESCE(addresses[1].country, '')) AS country
     FROM read_parquet(
         '{s3_path}',
         filename = true,
@@ -87,9 +87,10 @@ def main():
         OR basic_category ILIKE '%mosque%' 
         OR names.primary ILIKE '%mosque%' 
         OR names.primary ILIKE '%masjid%'
-        OR names.primary ILIKE '%jama masjid%'
         OR names.primary ILIKE '%musalla%'
     )
+    AND names.primary NOT ILIKE '%mosqueter%'
+    AND names.primary NOT ILIKE '%mosqueda%'
     AND names.primary IS NOT NULL
     AND ST_Y(geometry) IS NOT NULL 
     AND ST_X(geometry) IS NOT NULL;
