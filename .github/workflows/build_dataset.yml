@@ -1,0 +1,44 @@
+name: Build and Release Mosque Dataset
+on:
+  schedule:
+    # Runs at 03:00 UTC on the 1st of every month
+    - cron: '0 3 1 * *'
+  workflow_dispatch: # Allows manual trigger from GitHub web UI anytime
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build Regional & Global Datasets
+        run: python build_dataset.py
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Global Mosque Dataset (Monthly Release)"
+          body: |
+            ### Global Mosque SQLite Dataset
+            * **Automated Release**: Monthly OpenStreetMap & Overture sync.
+            * Contains full names, coordinates, street addresses, postal codes, phone numbers, and websites.
+            * Pre-indexed with SQLite spatial B-Trees for instantaneous queries.
+            
+            See `version.json` for per-region counts and file sizes.
+          draft: false
+          prerelease: false
+          files: |
+            dist/*.db.gz
+            dist/version.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
