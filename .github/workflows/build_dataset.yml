@@ -1,44 +1,67 @@
 name: Build and Release Mosque Dataset
+
 on:
   schedule:
-    # Runs at 03:00 UTC on the 1st of every month
-    - cron: '0 3 1 * *'
-  workflow_dispatch: # Allows manual trigger from GitHub web UI anytime
+    - cron: '0 3 * * 0' # Every Sunday at 03:00 UTC
+  workflow_dispatch:     # Allows manual trigger from GitHub web UI anytime
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install Dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Build Regional & Global Datasets
         run: python build_dataset.py
+
+      - name: Generate Dated Release Tag
+        id: tag
+        run: echo "release_tag=v$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: "Global Mosque Dataset (Monthly Release)"
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: "Global Mosque Dataset (${{ steps.tag.outputs.release_tag }})"
           body: |
             ### Global Mosque SQLite Dataset
-            * **Automated Release**: Monthly OpenStreetMap & Overture sync.
-            * Contains full names, coordinates, street addresses, postal codes, phone numbers, and websites.
-            * Pre-indexed with SQLite spatial B-Trees for instantaneous queries.
+            * **Automated Weekly Release**: Synced from OpenStreetMap & Overture Maps.
+            * Pre-indexed with SQLite spatial B-Trees for instant offline queries (<15ms).
+            * Contains verified names, coordinates, street addresses, postal codes, phone numbers, and websites.
             
             See `version.json` for per-region counts and file sizes.
           draft: false
           prerelease: false
+          make_latest: true
           files: |
             dist/*.db.gz
             dist/version.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prune Old Releases (Keep Last 4 Weeks)
+        run: |
+          echo "Pruning releases older than 4 weeks..."
+          gh release list --limit 50 --json tagName --jq '.[4:] | .[].tagName' | while read -r old_tag; do
+            if [ -n "$old_tag" ]; then
+              echo "Deleting old release and tag: $old_tag"
+              gh release delete "$old_tag" --yes --cleanup-tag
+            fi
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
