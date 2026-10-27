@@ -4,6 +4,7 @@ import gzip
 import json
 import time
 import urllib.request
+import re
 import duckdb
 
 # Schema matching Simple Athan App SQLite engine
@@ -44,11 +45,18 @@ def get_latest_overture_version():
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             links = data.get("links", [])
-            child_links = [l.get("href", "") for l in links if l.get("rel") == "child"]
-            for href in reversed(child_links):
-                parts = href.strip("/").split("/")
-                if parts and parts[-1].count(".") >= 1:
-                    return parts[-1]
+            # 1. Look for child link with 'latest': True
+            for l in links:
+                if l.get("rel") == "child" and l.get("latest") is True:
+                    match = re.search(r'(\d{4}-\d{2}-\d{2}\.\d+)', l.get("href", ""))
+                    if match:
+                        return match.group(1)
+            # 2. Fallback: search backwards through child links
+            for l in reversed(links):
+                if l.get("rel") == "child":
+                    match = re.search(r'(\d{4}-\d{2}-\d{2}\.\d+)', l.get("href", ""))
+                    if match:
+                        return match.group(1)
     except Exception as e:
         print(f"Warning: Could not fetch latest release dynamically ({e}). Defaulting to 2026-10-21.0")
     return "2026-10-21.0"
