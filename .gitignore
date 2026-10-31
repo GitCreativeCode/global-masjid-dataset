@@ -1,0 +1,18 @@
+# AI Agent context documents (keep local, do not push to public repo)
+*.md
+!README.md
+# Build outputs & temporary datasets
+dist/
+*.db
+*.db.gz
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# DuckDB / local temporary files
+*.tmp
+.duckdb/
+
